@@ -3,12 +3,13 @@ package com.atguigu.gmall.realtime.app
 import java.lang
 
 import com.alibaba.fastjson.serializer.SerializeConfig
-import com.alibaba.fastjson.{JSON, JSONObject}
-import com.atguigu.gmall.realtime.bean.PageLog
+import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
+import com.atguigu.gmall.realtime.bean.{PageActionLog, PageDisplayLog, PageLog, StartLog}
 import com.atguigu.gmall.realtime.util.MyKafkaUtils
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.spark.SparkConf
-import org.apache.spark.streaming.dstream.InputDStream
+import org.apache.spark.streaming.dstream.{DStream, InputDStream}
+import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 
 /**
@@ -25,14 +26,26 @@ object OdsBaseLogApp {
     //从kafka消费数据，拿到sparkstreaming的InputDStream流对象
     val topic : String = "ODS_BASE_LOG_0106"
     val groupId : String = "ODS_BASE_LOG_GROUP"
+    //TODO 优化：从redis读取offset，指定offset进行消费
+
     val kafkaDStream: InputDStream[ConsumerRecord[String, String]] =
                     MyKafkaUtils.getKafkaDStream(ssc,topic,groupId)
+
+    //TODO 优化：提取offset
+    var offsetRanges: Array[OffsetRange] = null
+    val offsetDStream: DStream[ConsumerRecord[String, String]] = kafkaDStream.transform(
+      rdd => {
+        offsetRanges = rdd.asInstanceOf[HasOffsetRanges].offsetRanges
+        rdd
+      }
+    )
 
     //3.转化结构，将consumerRecord对象中的value提取出来，转换成方便操作的格式
     //通用结构：jsonObject Map
     //专用结构：bean
     //这个地方为了适普通用，选择转换成JsonObject
-    val jsonObjDStream = kafkaDStream.map(
+    //TODO 优化：在上面通过对kafkaDStream进行了转化，拿去了里面的offset信息，所以这里使用转化后的offsetDStream流，效果是一样的
+    val jsonObjDStream = offsetDStream.map(
       consumerRecord => {
         val messageValue: String = consumerRecord.value()
         //转换Json对象操作
@@ -77,7 +90,7 @@ object OdsBaseLogApp {
               val ar: String = commonObject.getString("ar")
               val ba: String = commonObject.getString("ba")
               val ch: String = commonObject.getString("ch")
-              val isNew: String = commonObject.getString("id_new")
+              val isNew: String = commonObject.getString("is_new")
               val md: String = commonObject.getString("md")
               val mid: String = commonObject.getString("mid")
               val os: String = commonObject.getString("os")
@@ -97,7 +110,7 @@ object OdsBaseLogApp {
                 val pageItemType: String = pageJsonObj.getString("item_type")
                 val lastPageId: String = pageJsonObj.getString("last_page_id")
                 val pageId: String = pageJsonObj.getString("page_id")
-                val sourceType: String = pageJsonObj.getString("sourceType")
+                val sourceType: String = pageJsonObj.getString("source_type")
 
                 //将字段封装到pageLog中.pageLog是自定义的bean，这里用到专用结构
                 val pageLog: PageLog = PageLog(mid,uid,ar,ch,isNew,md,os,vc,ba,pageId,lastPageId,pageItem,pageItemType,duringTime,sourceType,ts)
@@ -105,6 +118,42 @@ object OdsBaseLogApp {
                 val pageLogJson: String = JSON.toJSONString(pageLog, new SerializeConfig(true)) //new SerializeConfig(true)用来告知程序在转化过程中不要调用pageLog额度get/set方法，因为pageLog是scala类，没有get/set方法
                 //将页面访问数据发送到topic
                 MyKafkaUtils.sendToKafka(page_topic,pageLogJson)
+
+                //曝光数据拆分到topic
+                val displayJsonArr: JSONArray = jsonObject.getJSONArray("displays")
+                if (displayJsonArr != null && displayJsonArr.size() > 0){
+                  for (i <- 0 until displayJsonArr.size()){
+                    val displayJsonObj: JSONObject = displayJsonArr.getJSONObject(i)
+                    val displayType: String = displayJsonObj.getString("display_type")
+                    val displayItem: String = displayJsonObj.getString("item")
+                    val displayItemType: String = displayJsonObj.getString("item_type")
+                    val displayOrder: String = displayJsonObj.getString("order")
+                    val displayPosId: String = displayJsonObj.getString("pos_id")
+
+                    val pageDisplayLog: PageDisplayLog = PageDisplayLog(mid,uid,ar,ch,isNew,md,os,vc,ba,pageId,lastPageId,pageItem,pageItemType,duringTime,sourceType,displayType,displayItem,displayItemType,displayOrder,displayPosId,ts)
+
+                    val pageDisplayJson: String = JSON.toJSONString(pageDisplayLog,new SerializeConfig(true))
+
+                    MyKafkaUtils.sendToKafka(display_topic,pageDisplayJson)
+
+                  }
+                }
+
+                //行动数据拆分到topic
+                val actionJsonArr: JSONArray = jsonObject.getJSONArray("actions")
+                if (actionJsonArr != null && actionJsonArr.size() > 0){
+                  for ( i <- 0 until actionJsonArr.size()){
+                    val actionJsonObj: JSONObject = actionJsonArr.getJSONObject(i)
+                    val actionId: String = actionJsonObj.getString("action_id")
+                    val actionItem: String = actionJsonObj.getString("item")
+                    val actionItemType: String = actionJsonObj.getString("item_type")
+                    val actionTs: lang.Long = actionJsonObj.getLong("ts")
+
+                    val pageActionLog: PageActionLog = PageActionLog(mid,uid,ar,ch,isNew,md,os,vc,ba,pageId,lastPageId,pageItem,pageItemType,duringTime,sourceType,actionId,actionItem,actionItemType,actionTs,ts)
+
+                    MyKafkaUtils.sendToKafka(action_topic,JSON.toJSONString(pageActionLog,new SerializeConfig(true)))
+                  }
+                }
               }
 
 
@@ -112,16 +161,27 @@ object OdsBaseLogApp {
               val startJsonObj: JSONObject = jsonObject.getJSONObject("start")
               if (startJsonObj != null){
                 //如果有启动数据，那么就分离出来发完start_topic
-
+                val entry: String = startJsonObj.getString("entry")
+                val loadingTime: lang.Long = startJsonObj.getLong("loading_time")
+                val openAdId: String = startJsonObj.getString("open_ad_id")
+                val openAdMs: lang.Long = startJsonObj.getLong("open_ad_ms")
+                val openAdSkipMs: lang.Long = startJsonObj.getLong("open_ad_skip_ms")
+                //把启动字段和公共字段封装成Bean对象
+                val startLog: StartLog = StartLog(mid,uid,ar,ch,isNew,md,os,vc,ba,entry,openAdId,loadingTime,openAdMs,openAdSkipMs,ts)
+                //把bean对象转化成json对象
+                val startLogJson: String = JSON.toJSONString(startLog,new SerializeConfig(true))
+                //把启动数据发往kafka对应的主题
+                MyKafkaUtils.sendToKafka(start_topic,startLogJson)
               }
 
-
             }
+            //每条jsonObject都得过得逻辑
           }
         )
+        //每个rdd都得过一遍的位置
       }
     )
-
+    //foreachRDD外边，每次程序都得过一遍的位置
 
     ssc.start()
     ssc.awaitTermination()

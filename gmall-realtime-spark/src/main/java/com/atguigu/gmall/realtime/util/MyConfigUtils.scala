@@ -6,4 +6,8 @@ package com.atguigu.gmall.realtime.util
 object MyConfigUtils {
   //kafka.servers
   val KAFKA_SERVERS : String = "kafka.broker.list"
+  //redis.hosts
+  val REDIS_HOST = "redis.host"
+  //redis.port
+  val REDIS_PORT = "redis.port"
 }
