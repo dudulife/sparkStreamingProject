@@ -52,6 +52,21 @@ object MyKafkaUtils {
     )
     inputDStream
   }
+  /*
+  重载获取inputDStream对象的方法
+  新增offsets参数，可以指定offsets消费
+   */
+  def getKafkaDStream(ssc: StreamingContext,topic :String,groupId :String,offsets : Map[TopicPartition,Long]): InputDStream[ConsumerRecord[String,String]] = {
+    //设置消费者组
+    consumerParams.put(ConsumerConfig.GROUP_ID_CONFIG,groupId)
+
+    val inputDStream :InputDStream[ConsumerRecord[String,String]] = KafkaUtils.createDirectStream[String,String](
+      ssc,
+      LocationStrategies.PreferConsistent,//位置策略
+      ConsumerStrategies.Subscribe[String,String](Array(topic),consumerParams,offsets)//消费者策略，第一个参数需要可迭代的，所以传入array（topic）
+    )
+    inputDStream
+  }
 
   /*
   创建kafka生产者对象
@@ -93,6 +108,14 @@ object MyKafkaUtils {
    */
   def sendToKafka(topic : String,message :String) : Unit ={
     producer.send(new ProducerRecord[String,String](topic,message))
+  }
+
+  /*
+  kafka生产者刷洗方法
+  把缓冲区内数据强行压入broker
+   */
+  def flush(): Unit ={
+    producer.flush()
   }
 
 }

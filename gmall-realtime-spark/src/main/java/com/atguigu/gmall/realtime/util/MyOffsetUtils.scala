@@ -5,8 +5,6 @@ import java.util
 import org.apache.spark.streaming.kafka010.OffsetRange
 import redis.clients.jedis.Jedis
 import java.util.HashMap
-
-import org.apache.commons.lang.mutable.Mutable
 import org.apache.kafka.common.TopicPartition
 
 import scala.collection.mutable
@@ -69,6 +67,7 @@ object MyOffsetUtils {
     val jedis: Jedis = MyRedisUtils.getJedisFromPool()
     //从redis取出offset信息
     val hashMap: util.Map[String, String] = jedis.hgetAll(redisKey)
+    println("读取到offset："+hashMap)
     //构建需要返回的offset信息，目标就是将util.Map[String, String]，转化为mutable.Map[TopicPartition, Long]
     val offsets: mutable.Map[TopicPartition, Long] = mutable.Map[TopicPartition,Long]()
     import scala.collection.JavaConverters._
